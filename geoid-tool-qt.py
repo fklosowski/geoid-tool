@@ -12,14 +12,10 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
-import numpy as np # Used for dummy data generation
-import inspect # Retained from original code, but not directly used in the GUI logic
-
-#own modules
+#########
 from collections import OrderedDict
 import geoid_plotter
 from geoid_plotter import *
-import inspect
 from make_data import *
 
 
@@ -107,7 +103,7 @@ class MainWindow(QMainWindow):
 
     def _createMenuBar(self):
         """Initializes the application's menu bar."""
-        self.menubar = self.menuBar() # QMainWindow has its own menuBar()
+        self.menubar = self.menuBar()
 
         # File Menu
         fileMenu = self.menubar.addMenu('&File')

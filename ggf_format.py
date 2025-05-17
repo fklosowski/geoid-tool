@@ -1,27 +1,7 @@
 #!/usr/bin/env python
 
-import sys
-from struct import *
-import json
-import math
 import numpy as np
-
-# Commented out normalization functions from the original code
-# def normalizeLat(Lat):
-#     while Lat < -90:
-#         Lat +=180
-#
-#     while Lat > 90:
-#         Lat -=180
-#     return (Lat)
-#
-# def normalizeLong(Long):
-#     while Long < -180:
-#         Long +=360
-#
-#     while Long > 180:
-#         Long -=360
-#     return (Long)
+from struct import unpack
 
 class GGF:
     """
@@ -35,7 +15,23 @@ class GGF:
     # Define the fixed length of the GGF grid header
     GRID_HEADER_LENGTH = 146
 
-    def __init__(self, file_path, strict):
+    # Define common error codes for clarity
+    ERROR_FILE_NOT_FOUND = 99
+    ERROR_FILE_READ = 100
+    ERROR_FILE_TOO_SMALL = 1
+    ERROR_INVALID_SIGNATURE = 2
+    ERROR_UNSUPPORTED_VERSION = 3
+    ERROR_LAT_INCONSISTENCY = 4
+    ERROR_LON_INCONSISTENCY = 5
+    ERROR_FILE_SIZE_INCONSISTENCY = 6
+    ERROR_UNITS_NOT_SET = 101
+    ERROR_INTERPOLATION_NOT_SET = 102
+    ERROR_DATA_FORMAT_NOT_SET = 103
+    ERROR_LAT_DIRECTION_NOT_SET = 104
+    ERROR_LON_DIRECTION_NOT_SET = 105
+    ERROR_UNSUPPORTED_DATA_FORMAT = 202
+
+    def __init__(self, file_path: str, strict: bool = True):
         """
         Initializes the GGF parser by reading and validating the file.
 
@@ -43,206 +39,227 @@ class GGF:
             file_path (str): The path to the GGF binary file.
             strict (bool): If True, parsing will fail on non-critical
                            header inconsistencies (e.g., missing units/direction).
+                           Defaults to True.
         """
-        self._version = None
-        # Open the file in binary read mode
+        # Initialize all internal attributes to a default state
+        self._valid: bool = False
+        self._error_number: int = 0
+        self._error_string: str = ""
+        self._version: int | None = None
+        self._name: str = ""
+        self._lat_min: float = 0.0
+        self._lat_max: float = 0.0
+        self._long_min: float = 0.0
+        self._long_max: float = 0.0
+        self._lat_interval: float = 0.0
+        self._long_interval: float = 0.0
+        self._lat_grid_size: int = 0
+        self._long_grid_size: int = 0
+        self._grid_n_pole: float = 0.0
+        self._grid_s_pole: float = 0.0
+        self._grid_missing_value: float = 0.0
+        self._grid_scalar: float = 0.0
+        self._grid_window: int = 0
+        self._flags: dict = {}
+        self._grid: list | None = None
+        self._min_value: float | None = None
+        self._max_value: float | None = None
+        self._min_value_footer: float | None = None
+        self._max_value_footer: float | None = None
+        self._missing_count: int = 0
+
         try:
             with open(file_path, 'rb') as file:
                 ggf_file_data = file.read()
         except FileNotFoundError:
-            self._valid = False
-            self._errorNumber = 99
-            self._errorString = f"File not found: {file_path}"
+            self._set_error(self.ERROR_FILE_NOT_FOUND, f"File not found: {file_path}")
             return
         except Exception as e:
-            self._valid = False
-            self._errorNumber = 100
-            self._errorString = f"Error reading file: {e}"
+            self._set_error(self.ERROR_FILE_READ, f"Error reading file: {e}")
             return
 
         # Validate and parse the file data
-        (self._valid, self._errorNumber, self._errorString) = self.validateAndParse(ggf_file_data, strict)
+        self._valid, self._error_number, self._error_string = self._validate_and_parse(
+            ggf_file_data, strict
+        )
 
-    # --- Properties to access parsed data ---
+    def _set_error(self, error_number: int, error_string: str):
+        """Helper method to set error state."""
+        self._valid = False
+        self._error_number = error_number
+        self._error_string = error_string
+
+    # --- Public Properties to access parsed data ---
 
     @property
-    def errorNumber(self):
+    def error_number(self) -> int:
         """Returns the error code if parsing failed, otherwise 0."""
-        return self._errorNumber
+        return self._error_number
 
     @property
-    def errorString(self):
+    def error_string(self) -> str:
         """Returns the error message if parsing failed, otherwise an empty string."""
-        return self._errorString
+        return self._error_string
 
     @property
-    def Flags(self):
+    def flags(self) -> dict:
         """Returns a dictionary of parsed header flags."""
         return self._flags
 
     @property
-    def Grid(self):
+    def grid(self) -> list | None:
         """
         Returns the grid data as a flattened list.
         Missing values are represented as None.
         """
         return self._grid
 
-    # Note: Grid2D property is not implemented in the original code
-    # @property
-    # def Grid2D(self):
-    #     """Returns the grid data as a 2D numpy array."""
-    #     # This would require reshaping the self._grid list
-    #     return self._grid2D # Placeholder
-
     @property
-    def LatInterval(self):
+    def lat_interval(self) -> float:
         """Returns the latitude interval between grid points."""
-        return self._LatInterval
+        return self._lat_interval
 
     @property
-    def LatGridSize(self):
+    def lat_grid_size(self) -> int:
         """Returns the number of grid points along the latitude axis (rows)."""
-        return self._LatGridSize
+        return self._lat_grid_size
 
     @property
-    def LatMin(self):
+    def lat_min(self) -> float:
         """Returns the minimum latitude of the grid boundary."""
-        return self._LatMin
+        return self._lat_min
 
     @property
-    def LatMax(self):
+    def lat_max(self) -> float:
         """Returns the maximum latitude of the grid boundary."""
-        return self._LatMax
+        return self._lat_max
 
     @property
-    def LongInterval(self):
+    def long_interval(self) -> float:
         """Returns the longitude interval between grid points."""
-        return self._LongInterval
+        return self._long_interval
 
     @property
-    def LongGridSize(self):
+    def long_grid_size(self) -> int:
         """Returns the number of grid points along the longitude axis (columns)."""
-        return self._LongGridSize
+        return self._long_grid_size
 
     @property
-    def LongMin(self):
+    def long_min(self) -> float:
         """Returns the minimum longitude of the grid boundary."""
-        return self._LongMin
+        return self._long_min
 
     @property
-    def LongMax(self):
+    def long_max(self) -> float:
         """Returns the maximum longitude of the grid boundary."""
-        return self._LongMax
+        return self._long_max
 
     @property
-    def GridMissing(self):
+    def grid_missing_value(self) -> float:
         """Returns the raw value used in the file to denote missing data."""
-        return self._GridMissing
+        return self._grid_missing_value
 
     @property
-    def GridNPole(self):
+    def grid_n_pole(self) -> float:
         """Returns the value for the North Pole (if applicable)."""
-        return self._GridNPole
+        return self._grid_n_pole
 
     @property
-    def GridScalar(self):
+    def grid_scalar(self) -> float:
         """Returns the scalar value used for scaled grid data."""
-        return self._GridScalar
+        return self._grid_scalar
 
     @property
-    def GridSPole(self):
+    def grid_s_pole(self) -> float:
         """Returns the value for the South Pole (if applicable)."""
-        return self._GridSPole
+        return self._grid_s_pole
 
     @property
-    def GridWindow(self):
+    def grid_window(self) -> int:
         """Returns the grid window value from the header."""
-        return self._GridWindow
+        return self._grid_window
 
     @property
-    def MinValue(self):
+    def min_value(self) -> float | None:
         """Returns the minimum value found in the grid data (excluding missing values)."""
-        return self._MinValue
+        return self._min_value
 
     @property
-    def MinValueFooter(self):
+    def min_value_footer(self) -> float | None:
         """Returns the minimum value found in the file footer (if version 1)."""
-        return self._MinValueFooter
+        return self._min_value_footer
 
     @property
-    def MaxValue(self):
+    def max_value(self) -> float | None:
         """Returns the maximum value found in the grid data (excluding missing values)."""
-        return self._MaxValue
+        return self._max_value
 
     @property
-    def MaxValueFooter(self):
+    def max_value_footer(self) -> float | None:
         """Returns the maximum value found in the file footer (if version 1)."""
-        return self._MaxValueFooter
+        return self._max_value_footer
 
     @property
-    def rows(self):
+    def rows(self) -> int:
         """Alias for LatGridSize."""
-        return self._LatGridSize
+        return self._lat_grid_size
 
     @property
-    def columns(self):
+    def columns(self) -> int:
         """Alias for LongGridSize."""
-        return self._LongGridSize
+        return self._long_grid_size
 
     @property
-    def boundary_south(self):
+    def boundary_south(self) -> float:
         """Alias for LatMin."""
-        return self._LatMin
+        return self._lat_min
 
     @property
-    def boundary_north(self):
+    def boundary_north(self) -> float:
         """Alias for LatMax."""
-        return self._LatMax
+        return self._lat_max
 
     @property
-    def boundary_east(self):
+    def boundary_east(self) -> float:
         """Alias for LongMax."""
-        return self._LongMax
+        return self._long_max
 
     @property
-    def boundary_west(self):
+    def boundary_west(self) -> float:
         """Alias for LongMin."""
-        return self._LongMin
+        return self._long_min
 
     @property
-    def Missing(self):
+    def missing_count(self) -> int:
         """Returns the count of missing values in the grid."""
-        return self._Missing
+        return self._missing_count
 
     @property
-    def valid(self):
+    def valid(self) -> bool:
         """Returns True if the file was successfully parsed and validated, False otherwise."""
         return self._valid
 
     @property
-    def version(self):
+    def version(self) -> int | None:
         """Returns the GGF file version."""
         return self._version
 
     # --- Internal Helper Methods ---
 
-    def bitSet(self, b, bit):
+    def _bit_is_set(self, byte_val: int, bit_pos: int) -> bool:
         """
         Checks if a specific bit is set in a byte.
 
         Args:
-            b (int): The byte value (as an integer).
-            bit (int): The bit position (0-7).
+            byte_val (int): The byte value (as an integer).
+            bit_pos (int): The bit position (0-7).
 
         Returns:
             bool: True if the bit is set, False otherwise.
         """
-        # In Python 3, bytes read from a file are integers, so ord() is not needed
-        testBit = 1 << bit
-        return ((b & testBit) != 0)
+        return ((byte_val >> bit_pos) & 1) != 0
 
-    def parseFlags(self, flags_bytes, strict):
+    def _parse_flags(self, flags_bytes: bytes, strict: bool) -> tuple[bool, int, str]:
         """
         Parses the 8 bytes of flag data from the header.
 
@@ -251,307 +268,260 @@ class GGF:
             strict (bool): If True, enforces stricter validation of flags.
 
         Returns:
-            tuple: (valid (bool), errorNumber (int), errorString (str))
+            tuple: (valid (bool), error_number (int), error_string (str))
         """
-        self._flags = {}
+        flags = {}
 
-        # Parse the first byte of flags
-        self._flags["GIF_GRID_WRAPS"] = self.bitSet(flags_bytes[0], 0)
-        self._flags["GIF_GRID_SCALED"] = self.bitSet(flags_bytes[0], 1)
-        self._flags["GIF_GRID_CHECK_MISSING"] = self.bitSet(flags_bytes[0], 2)
-        self._flags["GIF_GRID_NPOLE"] = self.bitSet(flags_bytes[0], 3)
-        self._flags["GIF_GRID_SPOLE"] = self.bitSet(flags_bytes[0], 4)
-        self._flags["GIF_GRID_XY"] = self.bitSet(flags_bytes[0], 5)
-        self._flags["GIF_REVERSE_AXES"] = self.bitSet(flags_bytes[0], 6)
-        self._flags["GIF_WGS84_BASED"] = self.bitSet(flags_bytes[0], 7)
+        # Parse the first byte of flags (General Grid Information)
+        flags["GIF_GRID_WRAPS"] = self._bit_is_set(flags_bytes[0], 0)
+        flags["GIF_GRID_SCALED"] = self._bit_is_set(flags_bytes[0], 1)
+        flags["GIF_GRID_CHECK_MISSING"] = self._bit_is_set(flags_bytes[0], 2)
+        flags["GIF_GRID_NPOLE"] = self._bit_is_set(flags_bytes[0], 3)
+        flags["GIF_GRID_SPOLE"] = self._bit_is_set(flags_bytes[0], 4)
+        flags["GIF_GRID_XY"] = self._bit_is_set(flags_bytes[0], 5)
+        flags["GIF_REVERSE_AXES"] = self._bit_is_set(flags_bytes[0], 6)
+        flags["GIF_WGS84_BASED"] = self._bit_is_set(flags_bytes[0], 7)
 
         # Parse the second byte (Units)
-        self._flags["GIF_UNITS_MILLIMETERS"] = self.bitSet(flags_bytes[1], 0)
-        self._flags["GIF_UNITS_CENTIMETERS"] = self.bitSet(flags_bytes[1], 1)
-        self._flags["GIF_UNITS_METERS"] = self.bitSet(flags_bytes[1], 2)
-        self._flags["GIF_UNITS_SURVEY_INCHES"] = self.bitSet(flags_bytes[1], 3)
-        self._flags["GIF_UNITS_SURVEY_FEET"] = self.bitSet(flags_bytes[1], 4)
-        self._flags["GIF_UNITS_INTL_INCHES"] = self.bitSet(flags_bytes[1], 5)
-        self._flags["GIF_UNITS_INTL_FEET"] = self.bitSet(flags_bytes[1], 6)
+        units_byte = flags_bytes[1]
+        flags["GIF_UNITS_MILLIMETERS"] = self._bit_is_set(units_byte, 0)
+        flags["GIF_UNITS_CENTIMETERS"] = self._bit_is_set(units_byte, 1)
+        flags["GIF_UNITS_METERS"] = self._bit_is_set(units_byte, 2)
+        flags["GIF_UNITS_SURVEY_INCHES"] = self._bit_is_set(units_byte, 3)
+        flags["GIF_UNITS_SURVEY_FEET"] = self._bit_is_set(units_byte, 4)
+        flags["GIF_UNITS_INTL_INCHES"] = self._bit_is_set(units_byte, 5)
+        flags["GIF_UNITS_INTL_FEET"] = self._bit_is_set(units_byte, 6)
 
         # Validate Units flag
-        if flags_bytes[1] == 0:
+        if units_byte == 0:
             if strict:
-                return(False, 101, "Units not set in header flags")
+                return False, self.ERROR_UNITS_NOT_SET, "Units not set in header flags"
             else:
                 # Default to meters if not strictly enforced
-                self._flags["GIF_UNITS_METERS"] = True
+                flags["GIF_UNITS_METERS"] = True
 
         # Parse the third byte (Interpolation)
-        if flags_bytes[2] == 0:
-             # Interpolation must be set
-            return(False, 102, "Interpolation method not set in header flags")
+        interp_byte = flags_bytes[2]
+        if interp_byte == 0:
+            return False, self.ERROR_INTERPOLATION_NOT_SET, "Interpolation method not set in header flags"
 
-        self._flags["GIF_INTERP_LINEAR"] = self.bitSet(flags_bytes[2], 0)
-        self._flags["GIF_INTERP_BILINEAR"] = self.bitSet(flags_bytes[2], 1)
-        self._flags["GIF_INTERP_SPLINE"] = self.bitSet(flags_bytes[2], 2)
-        self._flags["GIF_INTERP_BIQUADRATIC"] = self.bitSet(flags_bytes[2], 3)
-        self._flags["GIF_INTERP_QUADRATIC"] = self.bitSet(flags_bytes[2], 4)
-        self._flags["GIF_INTERP_GPS_MSL"] = self.bitSet(flags_bytes[2], 5)
+        flags["GIF_INTERP_LINEAR"] = self._bit_is_set(interp_byte, 0)
+        flags["GIF_INTERP_BILINEAR"] = self._bit_is_set(interp_byte, 1)
+        flags["GIF_INTERP_SPLINE"] = self._bit_is_set(interp_byte, 2)
+        flags["GIF_INTERP_BIQUADRATIC"] = self._bit_is_set(interp_byte, 3)
+        flags["GIF_INTERP_QUADRATIC"] = self._bit_is_set(interp_byte, 4)
+        flags["GIF_INTERP_GPS_MSL"] = self._bit_is_set(interp_byte, 5)
 
         # Parse the fourth byte (Data Format)
-        if flags_bytes[3] == 0:
-             # Data format must be set
-            return(False, 103, "Data format not set in header flags")
+        data_format_byte = flags_bytes[3]
+        if data_format_byte == 0:
+            return False, self.ERROR_DATA_FORMAT_NOT_SET, "Data format not set in header flags"
 
-        self._flags["GIF_FORMAT_BYTE"] = self.bitSet(flags_bytes[3], 0)
-        self._flags["GIF_FORMAT_SHORT"] = self.bitSet(flags_bytes[3], 1)
-        self._flags["GIF_FORMAT_LONG"] = self.bitSet(flags_bytes[3], 2)
-        self._flags["GIF_FORMAT_FLOAT"] = self.bitSet(flags_bytes[3], 3)
-        self._flags["GIF_FORMAT_DOUBLE"] = self.bitSet(flags_bytes[3], 4)
-        self._flags["GIF_FORMAT_LONG_DOUBLE"] = self.bitSet(flags_bytes[3], 5)
+        flags["GIF_FORMAT_BYTE"] = self._bit_is_set(data_format_byte, 0)
+        flags["GIF_FORMAT_SHORT"] = self._bit_is_set(data_format_byte, 1)
+        flags["GIF_FORMAT_LONG"] = self._bit_is_set(data_format_byte, 2)
+        flags["GIF_FORMAT_FLOAT"] = self._bit_is_set(data_format_byte, 3)
+        flags["GIF_FORMAT_DOUBLE"] = self._bit_is_set(data_format_byte, 4)
+        flags["GIF_FORMAT_LONG_DOUBLE"] = self._bit_is_set(data_format_byte, 5)
 
         # Check for supported data formats
-        if not (self._flags["GIF_FORMAT_FLOAT"] or self._flags["GIF_FORMAT_LONG"]):
-            return(False, 202, "Only Long (32-bit integer) and Float (32-bit float) data formats are supported at this time")
+        if not (flags["GIF_FORMAT_FLOAT"] or flags["GIF_FORMAT_LONG"]):
+            return False, self.ERROR_UNSUPPORTED_DATA_FORMAT, "Only Long (32-bit integer) and Float (32-bit float) data formats are supported."
 
         # Parse the fifth byte (Latitude Direction)
-        self._flags["GIF_LAT_ASCENDING"] = self.bitSet(flags_bytes[4], 0)
-        self._flags["GIF_LAT_DESCENDING"] = self.bitSet(flags_bytes[4], 1)
+        lat_dir_byte = flags_bytes[4]
+        flags["GIF_LAT_ASCENDING"] = self._bit_is_set(lat_dir_byte, 0)
+        flags["GIF_LAT_DESCENDING"] = self._bit_is_set(lat_dir_byte, 1)
 
         # Validate Latitude Direction flag
-        if flags_bytes[4] == 0:
+        if lat_dir_byte == 0:
             if strict:
-                return(False, 104, "Latitude direction not set in header flags")
+                return False, self.ERROR_LAT_DIRECTION_NOT_SET, "Latitude direction not set in header flags"
             else:
-                # Default to ascending if not strictly enforced
-                self._flags["GIF_LAT_ASCENDING"] = True
+                flags["GIF_LAT_ASCENDING"] = True
 
         # Parse the sixth byte (Longitude Direction)
-        self._flags["GIF_LON_ASCENDING"] = self.bitSet(flags_bytes[5], 0)
-        self._flags["GIF_LON_DESCENDING"] = self.bitSet(flags_bytes[5], 1)
+        lon_dir_byte = flags_bytes[5]
+        flags["GIF_LON_ASCENDING"] = self._bit_is_set(lon_dir_byte, 0)
+        flags["GIF_LON_DESCENDING"] = self._bit_is_set(lon_dir_byte, 1)
 
         # Validate Longitude Direction flag
-        if flags_bytes[5] == 0:
+        if lon_dir_byte == 0:
             if strict:
-                return(False, 105, "Longitude direction not set in header flags")
+                return False, self.ERROR_LON_DIRECTION_NOT_SET, "Longitude direction not set in header flags"
             else:
-                # Default to ascending if not strictly enforced
-                self._flags["GIF_LON_ASCENDING"] = True
+                flags["GIF_LON_ASCENDING"] = True
 
         # Bytes 7 and 8 are reserved and not currently parsed
+        self._flags = flags
+        return True, 0, ""
 
-        return(True, 0, "") # Return success
-
-    def parseGrid(self, ggfFile_bytes, isFloat, isScaled, scalar):
+    def _parse_grid(self, ggf_file_bytes: bytes):
         """
         Parses the grid data from the file bytes.
-
-        Args:
-            ggfFile_bytes (bytes): The full bytes of the GGF file.
-            isFloat (bool): True if the data format is float, False if long.
-            isScaled (bool): True if the data is scaled.
-            scalar (float): The scalar value to apply if scaled.
         """
-        self._grid = [] # Initialize grid as an empty list
-        self._MinValue = None # Initialize min value
-        self._MaxValue = None # Initialize max value
-        self._Missing = 0 # Initialize missing value count
+        self._grid = []
+        self._min_value = None
+        self._max_value = None
+        self._missing_count = 0
 
-        # Determine the size of each data point in bytes
-        data_size = 4 # Long and Float are both 4 bytes
+        # Determine the base data format character and its byte size
+        if self._flags["GIF_FORMAT_FLOAT"]:
+            base_format_char = "f"  # 32-bit float
+            data_byte_size = 4
+        elif self._flags["GIF_FORMAT_LONG"]:
+            base_format_char = "l"  # 32-bit signed integer
+            data_byte_size = 4
+        else:
+            # This should ideally not happen if _parse_flags worked correctly
+            # but as a fallback, raise an error for unsupported format.
+            raise ValueError("Unsupported data format for grid parsing in _parse_grid.")
+
+        # Construct the full unpack format string for a row.
+        # The endianness specifier '<' must come first, then the count, then the type.
+        # Example: "<100f" for 100 little-endian floats.
+        row_unpack_format = f"<{self._long_grid_size}{base_format_char}"
 
         # Iterate through each latitude row
-        for lat in range(self._LatGridSize):
-            # Calculate the start and end byte indices for the current row
-            start = self.GRID_HEADER_LENGTH + lat * self._LongGridSize * data_size
-            end = self.GRID_HEADER_LENGTH + (lat + 1) * self._LongGridSize * data_size
+        for lat_idx in range(self._lat_grid_size):
+            start_byte = self.GRID_HEADER_LENGTH + lat_idx * self._long_grid_size * data_byte_size
+            end_byte = start_byte + self._long_grid_size * data_byte_size
+
+            # Ensure there's enough data to unpack the current row
+            if end_byte > len(ggf_file_bytes):
+                raise IOError(f"File ended unexpectedly. Not enough data for grid row {lat_idx}. "
+                              f"Expected {end_byte} bytes, found {len(ggf_file_bytes)}.")
 
             # Unpack the data for the current row
-            if isFloat:
-                # Unpack as 32-bit floats (little-endian)
-                row_data = list(unpack("<{}f".format(self._LongGridSize), ggfFile_bytes[start: end]))
-            else:
-                # Unpack as 32-bit signed integers (little-endian)
-                row_data = list(unpack("<{}l".format(self._LongGridSize), ggfFile_bytes[start: end]))
-
-            # Apply scalar if data is scaled
-            if isScaled:
-                row_data = [x / scalar for x in row_data]
+            try:
+                row_raw_data = unpack(row_unpack_format, ggf_file_bytes[start_byte:end_byte])
+            except StructError as e:
+                # Provide more context if a struct.error occurs during unpacking
+                raise IOError(f"Error unpacking grid data at row {lat_idx} (bytes {start_byte}-{end_byte}). "
+                              f"Format: '{row_unpack_format}'. Error: {e}") from e
 
             # Process each data point in the row
-            for data_index in range(len(row_data)):
+            processed_row_data = []
+            for value in row_raw_data:
+                # Apply scalar if data is scaled
+                if self._flags["GIF_GRID_SCALED"]:
+                    # Avoid division by zero if scalar is somehow zero (unlikely for valid GGF)
+                    if self._grid_scalar == 0.0:
+                        processed_row_data.append(None) # Or handle as an error if appropriate
+                        continue
+                    value /= self._grid_scalar
+
                 # Check for missing value marker
-                if row_data[data_index] == self._GridMissing:
-                    row_data[data_index] = None # Replace missing marker with None
-                    self._Missing += 1 # Increment missing count
+                if value == self._grid_missing_value:
+                    processed_row_data.append(None)
+                    self._missing_count += 1
                 else:
-                    # Update min/max values if the data point is not missing
-                    if self._MinValue is None or row_data[data_index] < self._MinValue:
-                        self._MinValue = row_data[data_index]
+                    processed_row_data.append(value)
+                    # Update min/max values
+                    if self._min_value is None or value < self._min_value:
+                        self._min_value = value
+                    if self._max_value is None or value > self._max_value:
+                        self._max_value = value
+            self._grid.extend(processed_row_data)
 
-                    if self._MaxValue is None or row_data[data_index] > self._MaxValue:
-                        self._MaxValue = row_data[data_index]
-
-            # Append the processed row data to the main grid list
-            self._grid.extend(row_data)
-
-    def validateAndParse(self, ggfFile_bytes, strict):
+    def _validate_and_parse(self, ggf_file_bytes: bytes, strict: bool) -> tuple[bool, int, str]:
         """
         Validates the header and parses the main components of the GGF file.
 
         Args:
-            ggfFile_bytes (bytes): The full bytes of the GGF file.
+            ggf_file_bytes (bytes): The full bytes of the GGF file.
             strict (bool): If True, enforces stricter validation.
 
         Returns:
-            tuple: (valid (bool), errorNumber (int), errorString (str))
+            tuple: (valid (bool), error_number (int), error_string (str))
         """
         # Check if the file is large enough to contain the header
-        if len(ggfFile_bytes) < self.GRID_HEADER_LENGTH:
-            return(False, 1, "File size is too small to contain the full header")
+        if len(ggf_file_bytes) < self.GRID_HEADER_LENGTH:
+            return False, self.ERROR_FILE_TOO_SMALL, "File size is too small to contain the full header"
 
         # Check for the Trimble header signature
-        if ggfFile_bytes[2:16] != b'TNL GRID FILE\x00':
-            return(False, 2, "Missing the expected Trimble Header signature")
+        if ggf_file_bytes[2:16] != b'TNL GRID FILE\x00':
+            return False, self.ERROR_INVALID_SIGNATURE, "Missing the expected Trimble Header signature"
 
         # Unpack the file version (2-byte unsigned short, little-endian)
-        version = unpack("<H", ggfFile_bytes[0:2])[0]
-        if version > 1:
-            # Only versions 0 and 1 are currently supported
-            return(False, 3, f"Unsupported GGF version: {version}. Only versions 0 and 1 are supported.")
-        self._version = version
+        self._version = unpack("<H", ggf_file_bytes[0:2])[0]
+        if self._version > 1:
+            return False, self.ERROR_UNSUPPORTED_VERSION, f"Unsupported GGF version: {self._version}. Only versions 0 and 1 are supported."
 
         # Unpack and decode the grid name (32-byte ASCII string, null-padded)
-        Name = unpack("32s", ggfFile_bytes[16:48])[0]
-        Name = Name.decode('ascii')
-        Name = Name.rstrip("\x00") # Remove null padding
-        Name = Name.rstrip() # Remove trailing whitespace
-        self._Name = Name
+        self._name = unpack("32s", ggf_file_bytes[16:48])[0].decode('ascii').rstrip("\x00").rstrip()
 
         # Unpack boundary coordinates (8-byte doubles, little-endian)
-        self._LatMin = unpack("<d", ggfFile_bytes[48:56])[0]
-        self._LatMax = unpack("<d", ggfFile_bytes[56:64])[0]
-        self._LongMin = unpack("<d", ggfFile_bytes[64:72])[0]
-        self._LongMax = unpack("<d", ggfFile_bytes[72:80])[0]
+        self._lat_min = unpack("<d", ggf_file_bytes[48:56])[0]
+        self._lat_max = unpack("<d", ggf_file_bytes[56:64])[0]
+        self._long_min = unpack("<d", ggf_file_bytes[64:72])[0]
+        self._long_max = unpack("<d", ggf_file_bytes[72:80])[0]
 
         # Unpack interval sizes (8-byte doubles, little-endian)
-        self._LatInterval = unpack("<d", ggfFile_bytes[80:88])[0]
-        self._LongInterval = unpack("<d", ggfFile_bytes[88:96])[0]
+        self._lat_interval = unpack("<d", ggf_file_bytes[80:88])[0]
+        self._long_interval = unpack("<d", ggf_file_bytes[88:96])[0]
 
         # Unpack grid dimensions (4-byte unsigned integers, little-endian)
-        self._LatGridSize = unpack("<I", ggfFile_bytes[96:100])[0]
-        self._LongGridSize = unpack("<I", ggfFile_bytes[100:104])[0]
+        self._lat_grid_size = unpack("<I", ggf_file_bytes[96:100])[0]
+        self._long_grid_size = unpack("<I", ggf_file_bytes[100:104])[0]
 
         # Validate grid dimensions against boundary and interval values
-        # Allow for a small floating-point tolerance
-        if abs((self._LatMin + (self._LatGridSize - 1) * self._LatInterval) - self._LatMax) > 0.0001:
-            return(False, 4, "Latitude grid size and interval are inconsistent with Min/Max latitude values")
+        # Allow for a small floating-point tolerance (epsilon)
+        EPSILON = 1e-4 # A common tolerance for geospatial data
 
-        if abs(self._LongMin + (self._LongGridSize - 1) * self._LongInterval - self._LongMax) > 0.0001:
-            return(False, 5, "Longitude grid size and interval are inconsistent with Min/Max longitude values")
+        if abs((self._lat_min + (self._lat_grid_size - 1) * self._lat_interval) - self._lat_max) > EPSILON:
+            return False, self.ERROR_LAT_INCONSISTENCY, "Latitude grid size and interval are inconsistent with Min/Max latitude values"
+
+        if abs((self._long_min + (self._long_grid_size - 1) * self._long_interval) - self._long_max) > EPSILON:
+            return False, self.ERROR_LON_INCONSISTENCY, "Longitude grid size and interval are inconsistent with Min/Max longitude values"
 
         # Unpack pole values, missing value marker, and scalar (8-byte doubles, little-endian)
-        self._GridNPole = unpack("<d", ggfFile_bytes[104:112])[0]
-        self._GridSPole = unpack("<d", ggfFile_bytes[112:120])[0]
-        self._GridMissing = unpack("<d", ggfFile_bytes[120:128])[0]
-        self._GridScalar = unpack("<d", ggfFile_bytes[128:136])[0]
+        self._grid_n_pole = unpack("<d", ggf_file_bytes[104:112])[0]
+        self._grid_s_pole = unpack("<d", ggf_file_bytes[112:120])[0]
+        self._grid_missing_value = unpack("<d", ggf_file_bytes[120:128])[0]
+        self._grid_scalar = unpack("<d", ggf_file_bytes[128:136])[0]
 
         # Unpack grid window (2-byte unsigned short, little-endian)
-        self._GridWindow = unpack("<H", ggfFile_bytes[136:138])[0]
+        self._grid_window = unpack("<H", ggf_file_bytes[136:138])[0]
 
         # Parse the flag bytes
-        (valid, errNum, errString) = self.parseFlags(ggfFile_bytes[138:146], strict)
-        if not valid:
-            return (valid, errNum, errString) # Return flag parsing errors
+        valid_flags, err_num_flags, err_string_flags = self._parse_flags(ggf_file_bytes[138:146], strict)
+        if not valid_flags:
+            return valid_flags, err_num_flags, err_string_flags
 
         # Calculate the expected size of the grid data in bytes
-        # Assuming data format is either Long or Float (4 bytes each)
-        gridSize = (self._LatGridSize) * (self._LongGridSize) * 4
+        # Assumes data format is either Long or Float (4 bytes each)
+        grid_data_size_bytes = self._lat_grid_size * self._long_grid_size * 4
 
         # Validate total file size based on version
-        if version == 0:
-            # Version 0 has no footer
-            if len(ggfFile_bytes) != gridSize + self.GRID_HEADER_LENGTH:
-                return(False, 6, f"File size ({len(ggfFile_bytes)} bytes) is inconsistent with the calculated grid size ({gridSize} bytes) for Version 0")
-            self._MinValueFooter = None # No footer min/max in V0
-            self._MaxValueFooter = None
-        elif version == 1:
-            # Version 1 has a 16-byte footer (2 doubles for min/max)
-            if len(ggfFile_bytes) != gridSize + self.GRID_HEADER_LENGTH + 16:
-                return(False, 6, f"File size ({len(ggfFile_bytes)} bytes) is inconsistent with the calculated grid size ({gridSize} bytes) and footer for Version 1")
+        expected_total_size = self.GRID_HEADER_LENGTH + grid_data_size_bytes
+        if self._version == 1:
+            expected_total_size += 16 # Version 1 has a 16-byte footer
+
+        if len(ggf_file_bytes) != expected_total_size:
+            return False, self.ERROR_FILE_SIZE_INCONSISTENCY, f"File size ({len(ggf_file_bytes)} bytes) is inconsistent with the calculated grid size ({grid_data_size_bytes} bytes) and header/footer for Version {self._version}"
+
+        if self._version == 1:
             # Unpack footer min/max values
-            footer_start = gridSize + self.GRID_HEADER_LENGTH
-            self._MinValueFooter = unpack("<d", ggfFile_bytes[footer_start : footer_start + 8])[0]
-            self._MaxValueFooter = unpack("<d", ggfFile_bytes[footer_start + 8 : footer_start + 16])[0]
+            footer_start = self.GRID_HEADER_LENGTH + grid_data_size_bytes
+            self._min_value_footer = unpack("<d", ggf_file_bytes[footer_start : footer_start + 8])[0]
+            self._max_value_footer = unpack("<d", ggf_file_bytes[footer_start + 8 : footer_start + 16])[0]
 
         # Parse the actual grid data
-        self.parseGrid(ggfFile_bytes, self._flags["GIF_FORMAT_FLOAT"], self._flags["GIF_GRID_SCALED"], self.GridScalar)
+        self._parse_grid(ggf_file_bytes)
 
-        # Optional: Validate calculated min/max against footer min/max for Version 1
-        # This check is commented out in the original, but could be added for stricter validation
-        # if version == 1:
-        #     if abs(self._MinValue - self._MinValueFooter) > 0.0001 or abs(self._MaxValue - self._MaxValueFooter) > 0.0001:
-        #          # This might indicate an issue, depending on how min/max are calculated/stored
-        #          print("Warning: Calculated min/max values differ from footer values.")
+        return True, 0, "" # Return success
 
-
-        return(True, 0, "") # Return success
-
-    def dump_undulations(self):
+    def dump_undulations(self) -> np.ndarray:
         """
         Returns the grid data as a flattened numpy array.
         Missing values (None) are converted to NaN (Not a Number).
         """
+        if self._grid is None:
+            return np.array([]) # Return empty array if grid not parsed
+
         # Convert the list grid to a numpy array, handling None values
         # Use float type to accommodate NaN for missing values
-        undulations_grid = np.array(self.Grid, dtype=float)
+        undulations_grid = np.array(self._grid, dtype=float)
 
-        # Reshape the flattened array into a 2D grid (rows x columns)
-        # Note: The original code flattens it again after reshaping, which is redundant.
-        # Returning the flattened array directly from self.Grid is simpler if that's the goal.
-        # If a 2D array is desired, the reshape line is correct.
-        # undulations_grid = undulations_grid.reshape((self.LatGridSize, self.LongGridSize))
-
-        # The original code then flattens the reshaped array again.
-        # This is equivalent to just returning the initial flattened numpy array.
-        # undulations = undulations_grid.flatten()
-
-        # Return the flattened numpy array directly
         return undulations_grid
-
-# Example Usage (optional - uncomment to test)
-# if __name__ == "__main__":
-#     # Replace 'path/to/your/file.ggf' with the actual path to a GGF file
-#     file_path = 'path/to/your/file.ggf'
-#     strict_parsing = False # Set to True for stricter validation
-#
-#     ggf_data = GGF(file_path, strict_parsing)
-#
-#     if ggf_data.valid:
-#         print("GGF file parsed successfully!")
-#         print(f"Version: {ggf_data.version}")
-#         print(f"Name: {ggf_data._Name}") # Accessing internal _Name property
-#         print(f"Latitude Range: {ggf_data.LatMin} to {ggf_data.LatMax}")
-#         print(f"Longitude Range: {ggf_data.LongMin} to {ggf_data.LongMax}")
-#         print(f"Grid Size: {ggf_data.LatGridSize} rows x {ggf_data.LongGridSize} columns")
-#         print(f"Latitude Interval: {ggf_data.LatInterval}")
-#         print(f"Longitude Interval: {ggf_data.LongInterval}")
-#         print(f"Min Value (calculated): {ggf_data.MinValue}")
-#         print(f"Max Value (calculated): {ggf_data.MaxValue}")
-#         if ggf_data.version == 1:
-#              print(f"Min Value (footer): {ggf_data.MinValueFooter}")
-#              print(f"Max Value (footer): {ggf_data.MaxValueFooter}")
-#         print(f"Number of Missing Values: {ggf_data.Missing}")
-#         print("\nFlags:")
-#         for flag, value in ggf_data.Flags.items():
-#             print(f"  {flag}: {value}")
-#
-#         # Get the grid data as a numpy array
-#         undulations = ggf_data.dump_undulations()
-#         print(f"\nGrid data (flattened numpy array, first 10 values): {undulations[:10]}")
-#         print(f"Shape of flattened array: {undulations.shape}")
-#
-#         # If you need the 2D grid:
-#         # undulations_2d = undulations.reshape((ggf_data.LatGridSize, ggf_data.LongGridSize))
-#         # print(f"Shape of 2D array: {undulations_2d.shape}")
-#
-#     else:
-#         print(f"Error parsing GGF file: [{ggf_data.errorNumber}] {ggf_data.errorString}")
-
-

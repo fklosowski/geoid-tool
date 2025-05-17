@@ -32,7 +32,7 @@ def byn_data():
 
 def ggf_data():
     # GGF dataset
-    geoid = GGF('PL-EVRF2007-NH.ggf', strict=False)
+    geoid = GGF('Italy90.GGF', strict=False)
     undulations = geoid.dump_undulations()
     undulations_array = np.array(undulations, dtype=float).reshape((geoid.rows, geoid.columns))[::-1, :]
     masked_values = np.isnan(undulations_array)
