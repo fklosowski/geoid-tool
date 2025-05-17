@@ -1,0 +1,36 @@
+
+
+1. Header section:
+
+- `header`: 9 bytes
+
+- `magic`: 1 short (2 bytes)
+
+- `fsiz`: 1 integer (4 bytes)
+
+- `unk64`: 1 byte
+
+- `unk011`: 1 byte
+
+2.
+
+2. Skipped section:
+   
+- Unknown 71 bytes (`18 + 53`), 
+
+
+
+3. Parameter section:
+
+- `a`, `f1`, `miny`, `minx`, `maxy`, `maxx`, `dx`, `dy`, `unk012`: Each parameter is a double (8 bytes)
+
+- `ave`: 1 byte
+
+- `ncol`, `nvals`: Each parameter is an integer (4 bytes)
+
+
+
+4. Data section:
+
+- Each data point is a 16-bit integer (2 bytes)
+
