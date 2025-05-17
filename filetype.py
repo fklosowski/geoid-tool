@@ -1,25 +1,22 @@
 from pathlib import Path
-import os
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 def filetype(f):
-    fpath = Path(f)
-    path = fpath.resolve()
-    print 'INPUT FILE PATH: ', path
-    file_ = open(str(path),'rb').read()
-    if Path(f).suffix == '.ggf':
-        fileformat = 'ggf_'
-        return fileformat
-    if Path(f).suffix == '.gff':
-        fileformat = 'gff_'
-        return fileformat
-    if Path(f).suffix == '.byn':
-        fileformat = 'byn_'
-        return fileformat
-    if Path(f).suffix == '.gsf':
-        fileformat = 'gsf_'
-        return fileformat
-    if Path(f).suffix == '.bin':
-        fileformat = 'jav_bin_'
-        return fileformat
-    else:
-        return 'unknown'
+    # Resolve the file path
+    fpath = Path(f).resolve()
+    logging.info(f"INPUT FILE PATH: {fpath}")
+
+    # Define a mapping of file extensions to formats
+    file_extension_map = {
+        '.ggf': 'ggf_',
+        '.gff': 'gff_',
+        '.byn': 'byn_',
+        '.gsf': 'gsf_',
+        '.bin': 'jav_bin_'
+    }
+
+    # Get file extension and return corresponding format
+    return file_extension_map.get(fpath.suffix, 'unknown')
